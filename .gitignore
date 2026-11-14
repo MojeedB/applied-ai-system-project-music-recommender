@@ -13,3 +13,5 @@ venv/
 
 # Pytest cache
 .pytest_cache/
+
+.env
