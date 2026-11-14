@@ -1,0 +1,30 @@
+---
+title: Musics Match - request flow
+---
+flowchart TD
+    START(["User asks for music"]) --> HOW{"How?"}
+
+    HOW -->|"clicks a profile"| PROFILE["Profile route<br/>use the saved preferences"]
+    HOW -->|"types a description"| NORM["Clean up the text<br/>lowercase, tidy spaces"]
+
+    PROFILE --> CACHE{"Already answered<br/>in the last hour?"}
+    NORM --> CACHE
+
+    CACHE -->|yes| SHOW
+    CACHE -->|no| ROUTE{"Typed text?"}
+
+    ROUTE -->|yes| UNDERSTAND["Gemini call 1<br/>turn the description into preferences"]
+    ROUTE -->|no| CHECK
+    UNDERSTAND --> CHECK["Check the preferences<br/>drop unknown fields, keep numbers in range"]
+
+    CHECK --> RETRIEVE["Retrieve<br/>score every song, keep the top matches"]
+    RETRIEVE --> GENERATE["Gemini call 2<br/>write the recommendations<br/>using only the retrieved songs"]
+
+    GENERATE -->|success| STORE["Save the answer in the cache<br/>this is also what History lists"]
+    STORE --> SHOW
+    GENERATE -->|"Gemini fails"| FALLBACK["Friendly message<br/>plus a plain list of the songs"]
+    UNDERSTAND -->|"Gemini fails"| SORRY["Friendly apology"]
+    FALLBACK --> SHOW
+    SORRY --> SHOW
+
+    SHOW(["Show the answer"])

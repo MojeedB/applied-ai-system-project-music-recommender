@@ -1,0 +1,7 @@
+{
+  "Late-night Dance": {
+    "target_energy": 0.85,
+    "target_danceable": 0.95,
+    "pref_tempo": 135
+  }
+}

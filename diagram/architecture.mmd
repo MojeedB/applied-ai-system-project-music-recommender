@@ -1,61 +1,123 @@
 ---
-title: Music Recommender RAG - current design
+title: Musics Match - current design
 ---
 flowchart TD
-    USER([User]) -->|"free text, e.g. 'chill songs for studying'"| CLI["rag.py CLI<br/>recommend_from_text()"]
+    USER([User])
 
-    ENV[(".env<br/>GEMINI_API_KEY")] -.->|load_dotenv| CLI
-
-    subgraph LOAD["Startup: recommender.load_songs()"]
-        CSV[("data/songs.csv<br/>300 songs, 41 genres, 26 moods")] --> PARSE["Parse rows<br/>lowercase + canonical_genre()<br/>e.g. lo-fi -> lofi"]
-        PARSE --> TEMPO["set_tempo_range()<br/>TEMPO_MIN / TEMPO_MAX = catalog min / max"]
-        PARSE --> CATALOG[("In-memory song list")]
+    %% ---------------- Front ends ----------------
+    subgraph UI["Streamlit app - src/app.py"]
+        direction TB
+        SIDEBAR["Left sidebar<br/>1. Number of songs slider<br/>2. Profile buttons<br/>built-in + saved with a star"]
+        MAIN["Main page<br/>Description text box - default input<br/>Recommend / Regenerate buttons<br/>Answer + Save as profile form"]
+        HISTORY["Right panel - History<br/>cached answers, newest first<br/>titled by parsed profile, e.g. Lofi - Focused - Calm"]
     end
 
-    CLI --> LOAD
+    CLI["CLI - python src/rag.py<br/>menu: pick a profile or type a request"]
+    RUNNER["python src/main.py<br/>scores profiles with no AI<br/>--adversarial runs the edge cases"]
 
-    subgraph UNDERSTAND["Step 1 - Query understanding (Gemini)"]
-        PROMPT1["System prompt lists valid genres, moods<br/>and the live tempo range"]
-        GEM1{{"Gemini<br/>JSON mode"}}
-        VALIDATE["Validate profile<br/>keep known keys, clamp numbers<br/>(energy 0-1, tempo to catalog range)"]
-        PROMPT1 --> GEM1 --> VALIDATE
+    USER --> SIDEBAR
+    USER --> MAIN
+    USER --> HISTORY
+    USER --> CLI
+    USER --> RUNNER
+
+    %% ---------------- Profiles ----------------
+    subgraph PROF["Profiles"]
+        BUILTIN[("profiles.py<br/>PROFILES - user-facing")]
+        ADV[("profiles.py<br/>ADVERSARIAL_PROFILES<br/>test-only, never shown to users")]
+        SAVED[("data/user_profiles.json<br/>profiles saved by users<br/>user_profiles.py: unique title, max 40 chars")]
     end
 
-    CATALOG -.->|genre + mood lists| PROMPT1
-    TEMPO -.->|tempo range| PROMPT1
-    CLI --> PROMPT1
-    VALIDATE -->|"profile: genre, mood, energy,<br/>tempo, danceability, acousticness"| SCORE
+    BUILTIN --> SIDEBAR
+    SAVED <-->|"load / save"| SIDEBAR
+    MAIN -->|"Save as profile<br/>title + parsed profile"| SAVED
+    ADV -.-> RUNNER
+    BUILTIN -.-> CLI
 
-    subgraph RETRIEVE["Step 2 - Retrieval (no API, runs offline)"]
-        SCORE["score_song() for every song<br/>weights: mood .30, energy .20,<br/>genre .15, acoustic .15, tempo .10, dance .10"]
-        SIM["Partial-credit similarity<br/>mood_sim / genre_sim<br/>(families + pairwise overrides)"]
-        TOPK["heapq.nlargest(k=5)"]
+    %% ---------------- Result cache ----------------
+    subgraph CACHE["ResultCache - result_cache.py, shared by all sessions"]
+        STORE[("1 hour TTL, max 200 entries<br/>key = mode, input, k<br/>stores successful answers only")]
+    end
+
+    SIDEBAR -->|"profile click<br/>key = profile name"| LOOKUP{"Cached?"}
+    MAIN -->|"Recommend<br/>key = normalized text<br/>lowercase, collapsed spaces"| LOOKUP
+    MAIN -->|"Regenerate<br/>repeat last request, skip cache"| PIPE
+    LOOKUP -->|"hit - no API call"| SHOW
+    LOOKUP -->|miss| PIPE
+    STORE --> LOOKUP
+    STORE -->|entries| HISTORY
+    HISTORY -->|"click entry"| SHOW
+
+    %% ---------------- RAG pipeline ----------------
+    subgraph RAG["RAG pipeline - src/rag.py"]
+        direction TB
+        PIPE["get_recommendation_from_text / _from_profile"]
+
+        subgraph TXT["Text route"]
+            NORM["normalize_query"]
+            UNDERSTAND["Step 1 - Query understanding<br/>Gemini, JSON mode, temperature 0, seed 0<br/>prompt lists catalog genres, moods, tempo range"]
+            NORM --> UNDERSTAND
+        end
+
+        subgraph PRF["Profile route - skips Step 1"]
+            PWORDS["Describe profile in words, no numbers<br/>_profile_request"]
+        end
+
+        CLEAN["clean_profile<br/>keep known keys, clamp numbers"]
+        RETRIEVE["Step 2 - Retrieval, offline<br/>recommend_songs: score every song, top k"]
+        GENERATE["Step 3 - Grounded generation<br/>Gemini, default temperature<br/>only retrieved songs, described in words<br/>describe_song: no numbers, scores or BPM"]
+        REC["Recommendation<br/>text, ok, profile, results"]
+
+        PIPE --> NORM
+        PIPE --> PWORDS
+        UNDERSTAND --> CLEAN
+        PWORDS --> CLEAN
+        CLEAN -->|profile| RETRIEVE
+        RETRIEVE -->|top-k songs| GENERATE
+        GENERATE --> REC
+    end
+
+    BUILTIN -.-> PWORDS
+    SAVED -.-> PWORDS
+
+    %% ---------------- Retrieval engine ----------------
+    subgraph ENGINE["Recommender engine - src/recommender.py"]
+        CSV[("data/songs.csv<br/>300 songs, 41 genres, 26 moods")]
+        LOAD["load_songs<br/>canonical_genre: lo-fi to lofi<br/>set_tempo_range: tempo bounds = catalog min / max"]
+        SCORE["score_song weights<br/>mood .30, energy .20, genre .15<br/>acousticness .15, tempo .10, danceability .10"]
+        SIM["Partial credit similarity<br/>mood_sim, genre_sim<br/>families + pairwise overrides"]
+        CSV --> LOAD
         SCORE --- SIM
-        SCORE --> TOPK
     end
 
-    CATALOG --> SCORE
+    LOAD -->|"song list + tempo range"| RETRIEVE
+    LOAD -.->|"genre / mood lists + tempo range"| UNDERSTAND
+    RETRIEVE --- SCORE
+    RUNNER --> SCORE
+    RUNNER -.-> LOAD
 
-    subgraph GENERATE["Step 3 - Grounded generation (Gemini)"]
-        CONTEXT["Build context: numbered list of the<br/>retrieved songs only, with attributes + score"]
-        GEM2{{"Gemini<br/>'recommend ONLY from this list'"}}
-        CONTEXT --> GEM2
+    %% ---------------- Gemini + errors ----------------
+    ENV[(".env<br/>GEMINI_API_KEY")] -.->|load_dotenv| RAG
+    GEM{{"Gemini API<br/>free tier"}}
+    UNDERSTAND <--> GEM
+    GENERATE <--> GEM
+
+    subgraph ERR["Error handling - GeminiError"]
+        FRIENDLY["Friendly messages<br/>quota, bad key, wrong model,<br/>outage, network, blocked, empty reply"]
+        FB1["Step 1 failed<br/>apology + reason, ok = false"]
+        FB2["Step 3 failed<br/>plain list of retrieved songs<br/>+ friendly note, ok = false"]
     end
 
-    TOPK -->|top-k songs| CONTEXT
-    GEM2 --> ANSWER["Natural-language recommendations<br/>with a reason for each song"]
-    ANSWER --> USER
-
-    subgraph ERR["Error handling (GeminiError, friendly messages)"]
-        FRIENDLY["_friendly_message()<br/>429 quota, 401/403 key, 404 model,<br/>5xx outage, network, safety, empty reply"]
-        FB1["Step 1 failed:<br/>'Sorry, I couldn't work out your request'"]
-        FB2["Step 3 failed:<br/>plain list of retrieved songs<br/>+ friendly note"]
-    end
-
-    GEM1 -. API error .-> FRIENDLY
-    GEM2 -. API error .-> FRIENDLY
+    GEM -. API error .-> FRIENDLY
     FRIENDLY -.-> FB1
     FRIENDLY -.-> FB2
-    FB1 -.-> USER
-    FB2 -.-> USER
-    TOPK -.->|used for fallback| FB2
+    FB1 -.-> REC
+    FB2 -.-> REC
+
+    %% ---------------- Output ----------------
+    REC -->|"ok = true: store"| STORE
+    REC -->|"ok = false: not cached"| SHOW
+    REC --> SHOW
+    SHOW["Show answer<br/>friendly text, no raw numbers<br/>Save form only after a typed request"]
+    SHOW --> MAIN
+    REC -.-> CLI
