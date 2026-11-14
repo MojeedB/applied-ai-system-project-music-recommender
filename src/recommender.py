@@ -72,7 +72,7 @@ def load_songs(csv_path: str) -> List[Dict]:
                     "id": int(row["id"]),
                     "title": row["title"].strip(),
                     "artist": row["artist"].strip(),
-                    "genre": row["genre"].strip().lower(),
+                    "genre": canonical_genre(row["genre"]),
                     "mood": row["mood"].strip().lower(),
                     "energy": float(row["energy"]),
                     "tempo_bpm": int(float(row["tempo_bpm"])),
@@ -82,7 +82,8 @@ def load_songs(csv_path: str) -> List[Dict]:
                 })
             except (KeyError, ValueError, AttributeError) as e:
                 raise ValueError(f"{csv_path}, line {line_no}: bad row {row!r} ({e})") from e
-    print(f"Loaded {len(songs)} songs.")
+    set_tempo_range(songs)
+    print(f"Loaded {len(songs)} songs (tempo range {TEMPO_MIN}-{TEMPO_MAX} bpm).")
     return songs
 
 WEIGHTS = {
@@ -95,14 +96,28 @@ WEIGHTS = {
 }
 
 # Fixed bounds (min/max tempo_bpm in songs.csv) so one song can be scored without the catalog.
-TEMPO_MIN, TEMPO_MAX = 60, 168
+# Tempo scaling bounds. These defaults are replaced by the catalog's real min/max whenever
+# load_songs() runs (see set_tempo_range); they only matter if a song is scored without loading.
+DEFAULT_TEMPO_RANGE = (55, 186)
+TEMPO_MIN, TEMPO_MAX = DEFAULT_TEMPO_RANGE
+
+
+def set_tempo_range(songs: List[Dict]) -> None:
+    """Set TEMPO_MIN/TEMPO_MAX to the slowest and fastest tempo in `songs`."""
+    global TEMPO_MIN, TEMPO_MAX
+    tempos = [s["tempo_bpm"] for s in songs]
+    if not tempos or min(tempos) == max(tempos):  # empty or single-tempo catalog: keep a valid span
+        TEMPO_MIN, TEMPO_MAX = DEFAULT_TEMPO_RANGE
+    else:
+        TEMPO_MIN, TEMPO_MAX = min(tempos), max(tempos)
 
 MOOD_FAMILY = {
-    "chill": "A", "relaxed": "A", "focused": "A",
+    "chill": "A", "relaxed": "A", "focused": "A", "peaceful": "A",
     "sad": "B", "melancholic": "B", "soulful": "B",
-    "nostalgic": "C", "romantic": "C", "uplifting": "C",
+    "nostalgic": "C", "romantic": "C", "uplifting": "C", "dreamy": "C", "hopeful": "C",
     "happy": "D", "playful": "D", "energetic": "D", "confident": "D",
-    "intense": "E", "angry": "E", "moody": "E",
+    "euphoric": "D", "free": "D", "heroic": "D", "triumphant": "D", "determined": "D",
+    "intense": "E", "angry": "E", "moody": "E", "aggressive": "E", "dark": "E",
 }
 MOOD_FAMILY_SIM = {("A", "B"): 0.2, ("A", "C"): 0.3, ("B", "C"): 0.3,
                    ("C", "D"): 0.3, ("D", "E"): 0.2, ("B", "E"): 0.2}
@@ -124,6 +139,30 @@ MOOD_OVERRIDE = {
     ("nostalgic", "melancholic"): 0.4, ("moody", "melancholic"): 0.5,
     ("moody", "sad"): 0.4, ("romantic", "soulful"): 0.4,
     ("relaxed", "romantic"): 0.4, ("angry", "sad"): 0.1,
+    # peaceful (calm family)
+    ("peaceful", "chill"): 0.8, ("peaceful", "relaxed"): 0.8, ("peaceful", "focused"): 0.4,
+    # dreamy / hopeful (warm family)
+    ("dreamy", "romantic"): 0.6, ("dreamy", "nostalgic"): 0.5, ("dreamy", "chill"): 0.5,
+    ("dreamy", "moody"): 0.4, ("dreamy", "uplifting"): 0.4, ("dreamy", "relaxed"): 0.4,
+    ("hopeful", "uplifting"): 0.7, ("hopeful", "happy"): 0.5, ("hopeful", "nostalgic"): 0.3,
+    ("hopeful", "romantic"): 0.3,
+    # euphoric / free / heroic / triumphant / determined (high-spirit family)
+    ("euphoric", "energetic"): 0.7, ("euphoric", "happy"): 0.6, ("euphoric", "uplifting"): 0.6,
+    ("free", "uplifting"): 0.5, ("free", "happy"): 0.4, ("free", "nostalgic"): 0.3,
+    ("heroic", "triumphant"): 0.8, ("heroic", "confident"): 0.5, ("heroic", "determined"): 0.5,
+    ("heroic", "intense"): 0.4, ("heroic", "energetic"): 0.4,
+    ("triumphant", "confident"): 0.6, ("triumphant", "energetic"): 0.5,
+    ("triumphant", "uplifting"): 0.5, ("triumphant", "determined"): 0.5,
+    ("determined", "confident"): 0.5, ("determined", "focused"): 0.4,
+    ("determined", "intense"): 0.4, ("determined", "energetic"): 0.4,
+    # keep the broad "D" family from giving too much credit to unrelated pairs
+    ("happy", "heroic"): 0.1, ("happy", "determined"): 0.1, ("happy", "triumphant"): 0.3,
+    ("playful", "heroic"): 0.1, ("playful", "determined"): 0.1,
+    ("playful", "triumphant"): 0.2, ("free", "heroic"): 0.2, ("free", "determined"): 0.2,
+    # aggressive / dark (intense family)
+    ("aggressive", "angry"): 0.9, ("aggressive", "intense"): 0.7, ("aggressive", "moody"): 0.3,
+    ("dark", "moody"): 0.6, ("dark", "angry"): 0.5, ("dark", "intense"): 0.4,
+    ("dark", "melancholic"): 0.3, ("dark", "sad"): 0.3, ("dark", "aggressive"): 0.4,
 }
 
 GENRE_FAMILY = {
@@ -133,7 +172,32 @@ GENRE_FAMILY = {
     "edm": 4, "synthwave": 4,
     "rock": 5, "metal": 5,
     "hip hop": 6, "reggae": 6, "latin": 6,
+    # added with the expanded catalog
+    "americana": 2, "indie folk": 2,
+    "dream pop": 3, "synth pop": 3, "dance pop": 3, "k-pop": 3, "j-pop": 3,
+    "latin pop": 3, "neo soul": 3,
+    "house": 4, "techno": 4, "trance": 4, "dubstep": 4, "drum and bass": 4,
+    "alternative rock": 5, "heavy metal": 5, "doom metal": 5, "power metal": 5,
+    "metalcore": 5, "industrial metal": 5,
+    "trap": 6, "drill": 6,
 }
+
+# Spelling variants -> the canonical genre name used in the catalog.
+GENRE_ALIAS = {
+    "lo-fi": "lofi", "lo fi": "lofi",
+    "hiphop": "hip hop", "hip-hop": "hip hop", "rap": "hip hop",
+    "rnb": "r&b", "r and b": "r&b",
+    "dnb": "drum and bass", "drum & bass": "drum and bass", "drum n bass": "drum and bass",
+    "kpop": "k-pop", "jpop": "j-pop", "synthpop": "synth pop",
+    "alt rock": "alternative rock", "alt-rock": "alternative rock",
+    "electronic": "edm",
+}
+
+
+def canonical_genre(genre: str) -> str:
+    """Lowercase/trim a genre and map spelling variants (e.g. 'lo-fi') to the catalog name."""
+    g = genre.strip().lower()
+    return GENRE_ALIAS.get(g, g)
 GENRE_OVERRIDE = {
     ("pop", "indie pop"): 0.7, ("pop", "r&b"): 0.5,
     ("lofi", "jazz"): 0.6, ("lofi", "ambient"): 0.6,
@@ -149,6 +213,36 @@ GENRE_OVERRIDE = {
     ("r&b", "hip hop"): 0.6, ("r&b", "jazz"): 0.3,
     ("hip hop", "pop"): 0.3, ("hip hop", "edm"): 0.2,
     ("latin", "pop"): 0.4, ("reggae", "pop"): 0.2,
+    # metal sub-genres
+    ("heavy metal", "metal"): 0.9, ("power metal", "metal"): 0.7, ("doom metal", "metal"): 0.7,
+    ("metalcore", "metal"): 0.7, ("industrial metal", "metal"): 0.7,
+    ("heavy metal", "power metal"): 0.7, ("heavy metal", "doom metal"): 0.6,
+    ("heavy metal", "metalcore"): 0.7, ("heavy metal", "industrial metal"): 0.6,
+    ("power metal", "metalcore"): 0.5, ("doom metal", "industrial metal"): 0.5,
+    ("heavy metal", "rock"): 0.5, ("metalcore", "rock"): 0.3,
+    ("alternative rock", "rock"): 0.8, ("alternative rock", "metal"): 0.2,
+    ("alternative rock", "indie pop"): 0.3,
+    # folk / country family
+    ("folk", "indie folk"): 0.8, ("folk", "americana"): 0.6, ("country", "americana"): 0.8,
+    ("indie folk", "americana"): 0.5, ("indie folk", "country"): 0.4,
+    ("indie folk", "indie pop"): 0.4, ("americana", "blues"): 0.4, ("americana", "rock"): 0.3,
+    # pop family
+    ("dance pop", "pop"): 0.8, ("synth pop", "pop"): 0.7, ("k-pop", "pop"): 0.7,
+    ("j-pop", "pop"): 0.7, ("latin pop", "pop"): 0.7, ("dream pop", "pop"): 0.5,
+    ("k-pop", "j-pop"): 0.6, ("k-pop", "dance pop"): 0.6, ("j-pop", "dance pop"): 0.5,
+    ("synth pop", "dance pop"): 0.6, ("synth pop", "synthwave"): 0.6,
+    ("dream pop", "indie pop"): 0.6, ("dream pop", "ambient"): 0.4, ("dream pop", "synthwave"): 0.4,
+    ("dream pop", "synth pop"): 0.5, ("latin pop", "latin"): 0.8, ("latin pop", "reggae"): 0.3,
+    ("neo soul", "r&b"): 0.8, ("neo soul", "jazz"): 0.4, ("neo soul", "blues"): 0.3,
+    ("neo soul", "hip hop"): 0.3,
+    # electronic family
+    ("house", "edm"): 0.7, ("techno", "edm"): 0.7, ("trance", "edm"): 0.8,
+    ("dubstep", "edm"): 0.8, ("drum and bass", "edm"): 0.6, ("dance pop", "edm"): 0.5,
+    ("dance pop", "house"): 0.5, ("techno", "house"): 0.7, ("trance", "house"): 0.6,
+    ("techno", "trance"): 0.6, ("dubstep", "drum and bass"): 0.5, ("techno", "synthwave"): 0.4,
+    ("trance", "synthwave"): 0.3,
+    # hip hop family
+    ("trap", "hip hop"): 0.8, ("drill", "hip hop"): 0.7, ("drill", "trap"): 0.7,
 }
 
 
@@ -214,7 +308,7 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
 
     genre = user_prefs.get("favorite_genre")
     if genre and genre.strip():
-        genre = genre.strip().lower()
+        genre = canonical_genre(genre)
         terms.append(("genre", genre, song["genre"], genre_sim(genre, song["genre"])))
 
     energy = user_prefs.get("target_energy")
