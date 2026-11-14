@@ -27,7 +27,7 @@ id,title,artist,genre,mood,energy,tempo_bpm,valence,danceability,acousticness
 26,Lunar Reflections,Orbit Bloom,ambient,chill,0.26,58,0.67,0.39,0.94
 27,Sunday Espresso,Slow Stereo,jazz,relaxed,0.40,92,0.72,0.57,0.85
 28,Retro Skyline,Neon Echo,synthwave,moody,0.77,112,0.52,0.75,0.20
-29,Deep Work Session,LoRoom,chill,focused,0.41,82,0.55,0.59,0.76
+29,Deep Work Session,LoRoom,lofi,focused,0.41,82,0.55,0.59,0.76
 30,Cherry Street Dreams,Indigo Parade,indie pop,happy,0.74,122,0.83,0.80,0.33
 31,City Ambition,Dre Vale,hip hop,confident,0.82,98,0.68,0.91,0.09
 32,Frozen Sonata,Elise Marchetti,classical,melancholic,0.16,64,0.24,0.22,0.98
